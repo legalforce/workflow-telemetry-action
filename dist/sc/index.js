@@ -28577,59 +28577,163 @@ function getDiskSizeStats() {
     });
 }
 function getLineGraph(options) {
+    var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
-        const payload = {
-            options: {
-                width: 1000,
-                height: 500,
-                xAxis: {
-                    label: 'Time'
-                },
-                yAxis: {
-                    label: options.label
-                },
-                timeTicks: {
-                    unit: 'auto'
-                }
+        const chartConfig = {
+            type: 'line',
+            data: {
+                datasets: [
+                    {
+                        label: options.line.label,
+                        data: options.line.points,
+                        borderColor: options.line.color,
+                        backgroundColor: options.line.color + '33',
+                        fill: false,
+                        tension: 0.1
+                    }
+                ]
             },
-            lines: [options.line]
+            options: {
+                scales: {
+                    xAxes: [
+                        {
+                            type: 'time',
+                            time: {
+                                displayFormats: {
+                                    second: 'HH:mm:ss',
+                                    minute: 'HH:mm:ss',
+                                    hour: 'HH:mm'
+                                }
+                            },
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Time',
+                                fontColor: options.axisColor
+                            },
+                            ticks: {
+                                fontColor: options.axisColor
+                            }
+                        }
+                    ],
+                    yAxes: [
+                        {
+                            scaleLabel: {
+                                display: true,
+                                labelString: options.label,
+                                fontColor: options.axisColor
+                            },
+                            ticks: {
+                                fontColor: options.axisColor,
+                                beginAtZero: true
+                            }
+                        }
+                    ]
+                },
+                legend: {
+                    labels: {
+                        fontColor: options.axisColor
+                    }
+                }
+            }
+        };
+        const payload = {
+            width: 800,
+            height: 400,
+            chart: chartConfig
         };
         let response = null;
         try {
-            response = yield axios_1.default.put('https://api.globadge.com/v1/chartgen/line/time', payload);
+            response = yield axios_1.default.post('https://quickchart.io/chart/create', payload);
         }
         catch (error) {
             logger.error(error);
             logger.error(`getLineGraph ${JSON.stringify(payload)}`);
         }
+        if (((_a = response === null || response === void 0 ? void 0 : response.data) === null || _a === void 0 ? void 0 : _a.success) && ((_b = response === null || response === void 0 ? void 0 : response.data) === null || _b === void 0 ? void 0 : _b.url)) {
+            const urlParts = response.data.url.split('/');
+            const id = urlParts[urlParts.length - 1] || 'line-chart';
+            return { id, url: response.data.url };
+        }
         return response === null || response === void 0 ? void 0 : response.data;
     });
 }
 function getStackedAreaGraph(options) {
+    var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
-        const payload = {
-            options: {
-                width: 1000,
-                height: 500,
-                xAxis: {
-                    label: 'Time'
-                },
-                yAxis: {
-                    label: options.label
-                },
-                timeTicks: {
-                    unit: 'auto'
-                }
+        const datasets = options.areas.map((area, index) => ({
+            label: area.label,
+            data: area.points,
+            borderColor: area.color,
+            backgroundColor: area.color,
+            fill: index === 0 ? 'origin' : '-1',
+            tension: 0.1
+        }));
+        const chartConfig = {
+            type: 'line',
+            data: {
+                datasets
             },
-            areas: options.areas
+            options: {
+                scales: {
+                    xAxes: [
+                        {
+                            type: 'time',
+                            time: {
+                                displayFormats: {
+                                    second: 'HH:mm:ss',
+                                    minute: 'HH:mm:ss',
+                                    hour: 'HH:mm'
+                                }
+                            },
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Time',
+                                fontColor: options.axisColor
+                            },
+                            ticks: {
+                                fontColor: options.axisColor
+                            }
+                        }
+                    ],
+                    yAxes: [
+                        {
+                            stacked: true,
+                            scaleLabel: {
+                                display: true,
+                                labelString: options.label,
+                                fontColor: options.axisColor
+                            },
+                            ticks: {
+                                fontColor: options.axisColor,
+                                beginAtZero: true
+                            }
+                        }
+                    ]
+                },
+                legend: {
+                    labels: {
+                        fontColor: options.axisColor
+                    }
+                }
+            }
+        };
+        const payload = {
+            width: 800,
+            height: 400,
+            chart: chartConfig
         };
         let response = null;
         try {
-            response = yield axios_1.default.put('https://api.globadge.com/v1/chartgen/stacked-area/time', payload);
+            response = yield axios_1.default.post('https://quickchart.io/chart/create', payload);
         }
         catch (error) {
             logger.error(error);
             logger.error(`getStackedAreaGraph ${JSON.stringify(payload)}`);
+        }
+        if (((_a = response === null || response === void 0 ? void 0 : response.data) === null || _a === void 0 ? void 0 : _a.success) && ((_b = response === null || response === void 0 ? void 0 : response.data) === null || _b === void 0 ? void 0 : _b.url)) {
+            const urlParts = response.data.url.split('/');
+            const id = urlParts[urlParts.length - 1] || 'stacked-area-chart';
+            return { id, url: response.data.url };
         }
         return response === null || response === void 0 ? void 0 : response.data;
     });
