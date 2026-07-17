@@ -142,8 +142,11 @@ function artifactPageUrl(artifactId: number): string {
 }
 
 // GitHub strips `data:` URIs from `<img>` tags in both PR comments and job
-// summaries, so a locally-rendered chart can't be embedded inline. Instead we
-// upload the PNG as a workflow artifact and link to its page.
+// summaries, so a locally-rendered chart can't be embedded inline that way.
+// Instead we upload the PNG as a workflow artifact with `skipArchive: true`
+// (actions/upload-artifact's `archive: false`), which uploads the raw file
+// with its real content type instead of zipping it - GitHub can then render
+// it natively in the browser, so we embed the artifact's page as an `<img>`.
 async function renderAndUploadChart(
   config: ChartConfiguration<'line'>,
   artifactName: string
@@ -173,7 +176,7 @@ async function renderAndUploadChart(
       artifactName,
       [filePath],
       tempDir,
-      { compressionLevel: 0 }
+      { skipArchive: true }
     )
     if (!id) {
       throw new Error(`Failed to upload chart artifact '${artifactName}'`)
@@ -397,12 +400,16 @@ async function reportWorkflowMetrics(
 
   const postContentItems: string[] = []
   if (cpuLoad) {
-    postContentItems.push('### CPU Metrics', `[View chart](${cpuLoad.url})`, '')
+    postContentItems.push(
+      '### CPU Metrics',
+      `<img alt="${cpuLoad.id}" src="${cpuLoad.url}" />`,
+      ''
+    )
   }
   if (memoryUsage) {
     postContentItems.push(
       '### Memory Metrics',
-      `[View chart](${memoryUsage.url})`,
+      `<img alt="${memoryUsage.id}" src="${memoryUsage.url}" />`,
       ''
     )
   }
@@ -415,18 +422,18 @@ async function reportWorkflowMetrics(
   }
   if (networkIORead && networkIOWrite) {
     postContentItems.push(
-      `| Network I/O   | [View chart](${networkIORead.url})        | [View chart](${networkIOWrite.url})        |`
+      `| Network I/O   | <img alt="${networkIORead.id}" src="${networkIORead.url}" />        | <img alt="${networkIOWrite.id}" src="${networkIOWrite.url}" />        |`
     )
   }
   if (diskIORead && diskIOWrite) {
     postContentItems.push(
-      `| Disk I/O      | [View chart](${diskIORead.url})              | [View chart](${diskIOWrite.url})              |`
+      `| Disk I/O      | <img alt="${diskIORead.id}" src="${diskIORead.url}" />              | <img alt="${diskIOWrite.id}" src="${diskIOWrite.url}" />              |`
     )
   }
   if (diskSizeUsage) {
     postContentItems.push(
       '### Disk Size Metrics',
-      `[View chart](${diskSizeUsage.url})`,
+      `<img alt="${diskSizeUsage.id}" src="${diskSizeUsage.url}" />`,
       ''
     )
   }

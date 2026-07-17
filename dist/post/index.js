@@ -213240,8 +213240,11 @@ function artifactPageUrl(artifactId) {
     return `https://github.com/${owner}/${repo}/actions/runs/${github.context.runId}/artifacts/${artifactId}`;
 }
 // GitHub strips `data:` URIs from `<img>` tags in both PR comments and job
-// summaries, so a locally-rendered chart can't be embedded inline. Instead we
-// upload the PNG as a workflow artifact and link to its page.
+// summaries, so a locally-rendered chart can't be embedded inline that way.
+// Instead we upload the PNG as a workflow artifact with `skipArchive: true`
+// (actions/upload-artifact's `archive: false`), which uploads the raw file
+// with its real content type instead of zipping it - GitHub can then render
+// it natively in the browser, so we embed the artifact's page as an `<img>`.
 async function renderAndUploadChart(config, artifactName) {
     const skiaCanvas = await ensureSkiaCanvas();
     Object.assign(global, { Image: skiaCanvas.Image });
@@ -213253,7 +213256,7 @@ async function renderAndUploadChart(config, artifactName) {
     try {
         const filePath = external_path_default().join(tempDir, `${artifactName}.png`);
         external_fs_default().writeFileSync(filePath, png);
-        const { id } = await artifact.uploadArtifact(artifactName, [filePath], tempDir, { compressionLevel: 0 });
+        const { id } = await artifact.uploadArtifact(artifactName, [filePath], tempDir, { skipArchive: true });
         if (!id) {
             throw new Error(`Failed to upload chart artifact '${artifactName}'`);
         }
@@ -213424,22 +213427,22 @@ async function reportWorkflowMetrics(currentJob) {
         : null;
     const postContentItems = [];
     if (cpuLoad) {
-        postContentItems.push('### CPU Metrics', `[View chart](${cpuLoad.url})`, '');
+        postContentItems.push('### CPU Metrics', `<img alt="${cpuLoad.id}" src="${cpuLoad.url}" />`, '');
     }
     if (memoryUsage) {
-        postContentItems.push('### Memory Metrics', `[View chart](${memoryUsage.url})`, '');
+        postContentItems.push('### Memory Metrics', `<img alt="${memoryUsage.id}" src="${memoryUsage.url}" />`, '');
     }
     if ((networkIORead && networkIOWrite) || (diskIORead && diskIOWrite)) {
         postContentItems.push('### IO Metrics', '|               | Read      | Write     |', '|---            |---        |---        |');
     }
     if (networkIORead && networkIOWrite) {
-        postContentItems.push(`| Network I/O   | [View chart](${networkIORead.url})        | [View chart](${networkIOWrite.url})        |`);
+        postContentItems.push(`| Network I/O   | <img alt="${networkIORead.id}" src="${networkIORead.url}" />        | <img alt="${networkIOWrite.id}" src="${networkIOWrite.url}" />        |`);
     }
     if (diskIORead && diskIOWrite) {
-        postContentItems.push(`| Disk I/O      | [View chart](${diskIORead.url})              | [View chart](${diskIOWrite.url})              |`);
+        postContentItems.push(`| Disk I/O      | <img alt="${diskIORead.id}" src="${diskIORead.url}" />              | <img alt="${diskIOWrite.id}" src="${diskIOWrite.url}" />              |`);
     }
     if (diskSizeUsage) {
-        postContentItems.push('### Disk Size Metrics', `[View chart](${diskSizeUsage.url})`, '');
+        postContentItems.push('### Disk Size Metrics', `<img alt="${diskSizeUsage.id}" src="${diskSizeUsage.url}" />`, '');
     }
     return postContentItems.join('\n');
 }
