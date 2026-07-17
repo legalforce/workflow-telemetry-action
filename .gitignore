@@ -1,6 +1,9 @@
 # Dependency directory
 node_modules
 
+# skia-canvas's native binary, fetched at Action runtime (see statCollector.ts)
+/dist/skia.node
+
 # Rest pulled from https://github.com/github/gitignore/blob/master/Node.gitignore
 # Logs
 logs

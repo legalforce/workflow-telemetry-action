@@ -1,6 +1,8 @@
-import { ChildProcess, execFileSync, spawn } from 'child_process'
+import { ChildProcess, spawn } from 'child_process'
+import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
+import zlib from 'zlib'
 import axios from 'axios'
 import { Chart, registerables } from 'chart.js'
 import type { ChartConfiguration, ChartItem, ChartOptions } from 'chart.js'
@@ -8,6 +10,7 @@ import type {
   Canvas as SkiaCanvasCtor,
   Image as SkiaImageCtor
 } from 'skia-canvas'
+import { GLIBC, family as detectLibcFamily } from 'detect-libc'
 import * as core from '@actions/core'
 import {
   CPUStats,
@@ -43,43 +46,91 @@ interface SkiaCanvasExports {
   Image: typeof SkiaImageCtor
 }
 
+// Keep in sync with the `skia-canvas` version pinned in package.json.
+const SKIA_CANVAS_VERSION = '3.0.8'
+const SKIA_CANVAS_RELEASE_URL = `https://github.com/samizdatco/skia-canvas/releases/download/v${SKIA_CANVAS_VERSION}`
+
+// sha256 digests of that version's prebuilt binaries, copied from its
+// package.json `prebuild` field, used to verify the download below.
+const SKIA_CANVAS_PREBUILD_HASHES: { readonly [asset: string]: string } = {
+  'darwin-arm64.gz':
+    'sha256:df5f6aec9b92a83861473dff8cf1ed3aea16b89af6f66a9cfbc25ff7fc7460a9',
+  'darwin-x64.gz':
+    'sha256:3301d9241b661f30dcaf73c413b91549d020d7c2faff4b13905007b93ff66736',
+  'linux-arm64-glibc.gz':
+    'sha256:0665d07a60c05d912a2fd1459aeb37714eb0445c2f7848407638546c3d2e1a70',
+  'linux-arm64-musl.gz':
+    'sha256:27c58e0027c0507a7fcca274492c23b52d19b2a73ffe3199fd6fd808b578f78f',
+  'linux-x64-glibc.gz':
+    'sha256:f45925290599d4b7cb5211c123fadee27bc899d7556696e2e333d0efac6937b2',
+  'linux-x64-musl.gz':
+    'sha256:be1bdee982d2b4abf2827d97d04d212bb03ab849177f40a37023401c61d3e730',
+  'win32-arm64.gz':
+    'sha256:53de01055e63bb610aece10abf6520f7140a5f25c2a8a7f9361cd7529b71e333',
+  'win32-x64.gz':
+    'sha256:bdf56f8b0e0473ec414f510b5b7068d33a76b3488fd608f49ca92d5bfb77b428'
+}
+
 let skiaCanvasPromise: Promise<SkiaCanvasExports> | null = null
 
-// `skia-canvas` ships a native addon that can't be embedded in the ncc bundle
-// (the bundle is built once but runs on whichever OS/arch the workflow uses).
-// `skia-canvas` is vendored as a real dependency (see `scripts/vendor-skia-canvas.js`)
-// without its platform-specific binary, so at runtime we fetch just that binary
-// via the package's own installer script, without depending on an external
-// chart-rendering service or re-running a full `npm install`.
+// `skia-canvas`'s JS (and its own JS dependencies) are bundled into the ncc
+// output like any other dependency. Only its native addon is special-cased:
+// `scripts/strip-skia-canvas-binary.js` deletes it before `ncc build` runs, so
+// ncc can't find a `skia.node` to bake in for whichever platform built this
+// package (the bundle is built once but runs on whichever OS/arch the workflow
+// uses) - that leaves skia-canvas's internal `require('../skia.node')` as a
+// plain runtime lookup relative to this bundle's own location. We fetch a
+// prebuilt binary matching the actual runner into that exact spot before the
+// first render, straight from skia-canvas's own GitHub release (no `npm
+// install` and no external chart-rendering service involved).
+async function ensureSkiaCanvasBinary(): Promise<void> {
+  const binaryPath = path.join(__dirname, '..', 'skia.node')
+  if (fs.existsSync(binaryPath)) {
+    return
+  }
+
+  const asset = `${await skiaCanvasAssetTriplet()}.gz`
+  const url = `${SKIA_CANVAS_RELEASE_URL}/${asset}`
+  logger.debug(`Fetching skia-canvas native binary from ${url} ...`)
+
+  const response = await axios.get<ArrayBuffer>(url, {
+    responseType: 'arraybuffer'
+  })
+  const gzipped = Buffer.from(response.data)
+
+  const expectedHash = SKIA_CANVAS_PREBUILD_HASHES[asset]
+  const actualHash = `sha256:${crypto.createHash('sha256').update(gzipped).digest('hex')}`
+  if (expectedHash && actualHash !== expectedHash) {
+    throw new Error(
+      `skia-canvas prebuilt binary '${asset}' failed integrity check (expected ${expectedHash}, got ${actualHash})`
+    )
+  }
+
+  fs.mkdirSync(path.dirname(binaryPath), { recursive: true })
+  fs.writeFileSync(binaryPath, zlib.gunzipSync(gzipped))
+  logger.debug(`Fetched skia-canvas native binary to ${binaryPath}`)
+}
+
+async function skiaCanvasAssetTriplet(): Promise<string> {
+  const { platform, arch } = process
+  if (platform !== 'linux') {
+    return `${platform}-${arch}`
+  }
+  const libc = (await detectLibcFamily()) === GLIBC ? 'glibc' : 'musl'
+  return `${platform}-${arch}-${libc}`
+}
+
+async function loadSkiaCanvas(): Promise<SkiaCanvasExports> {
+  await ensureSkiaCanvasBinary()
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('skia-canvas')
+}
+
 async function ensureSkiaCanvas(): Promise<SkiaCanvasExports> {
   if (!skiaCanvasPromise) {
     skiaCanvasPromise = loadSkiaCanvas()
   }
   return skiaCanvasPromise
-}
-
-async function loadSkiaCanvas(): Promise<SkiaCanvasExports> {
-  // `skia-canvas` is vendored one directory above this bundle (see
-  // `scripts/vendor-skia-canvas.js`), the same layout `tsc`'s plain `lib/`
-  // output has relative to the project's real `node_modules`. We can't use
-  // `require.resolve('skia-canvas')` for this: ncc statically rewrites it to
-  // point at its own bundle output rather than the real installed package.
-  const packageDir = path.join(__dirname, '..', 'node_modules', 'skia-canvas')
-  const binaryPath = path.join(packageDir, 'lib', 'skia.node')
-
-  if (!fs.existsSync(binaryPath)) {
-    const prebuildScript = path.join(packageDir, 'lib', 'prebuild.mjs')
-    logger.debug(`Fetching skia-canvas native binary via ${prebuildScript} ...`)
-    execFileSync(
-      process.execPath,
-      [prebuildScript, 'download', '--or-compile'],
-      { cwd: packageDir, stdio: 'pipe' }
-    )
-    logger.debug('Fetched skia-canvas native binary')
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require('skia-canvas')
 }
 
 async function renderChartToDataUri(
