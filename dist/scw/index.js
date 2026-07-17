@@ -40792,8 +40792,8 @@ function collectDiskSizeStats(statTime, timeInterval) {
     });
 }
 ///////////////////////////
-function collectStats(triggeredFromScheduler = true) {
-    return __awaiter(this, void 0, void 0, function* () {
+function collectStats() {
+    return __awaiter(this, arguments, void 0, function* (triggeredFromScheduler = true) {
         try {
             const currentTime = Date.now();
             const timeInterval = statCollectTime

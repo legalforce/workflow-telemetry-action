@@ -1,6 +1,7 @@
 import { ChildProcess, spawn } from 'child_process'
 import crypto from 'crypto'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import zlib from 'zlib'
 import axios from 'axios'
@@ -12,6 +13,7 @@ import type {
 } from 'skia-canvas'
 import { GLIBC, family as detectLibcFamily } from 'detect-libc'
 import * as core from '@actions/core'
+import * as github from '@actions/github'
 import {
   CPUStats,
   DiskSizeStats,
@@ -134,8 +136,44 @@ async function ensureSkiaCanvas(): Promise<SkiaCanvasExports> {
   return skiaCanvasPromise
 }
 
-async function renderChartToDataUri(
-  config: ChartConfiguration<'line'>
+type ArtifactModule = typeof import('@actions/artifact')
+type ArtifactClient = ArtifactModule['default']
+
+let artifactClientPromise: Promise<ArtifactClient> | null = null
+
+// `@actions/artifact`'s package.json `exports` only declares an `import`
+// condition (it ships ESM only), so a normal static or dynamic import gets
+// downleveled by TypeScript's CommonJS output into a `require()` call that
+// fails at runtime with ERR_PACKAGE_PATH_NOT_EXPORTED - the same restriction
+// also stops ncc from bundling it. Hiding the specifier inside a `Function`
+// keeps the compiler from touching it, so this performs a genuine ESM
+// `import()` at runtime instead.
+async function loadArtifactClient(): Promise<ArtifactClient> {
+  const importESM = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<ArtifactModule>
+  const mod = await importESM('@actions/artifact')
+  return mod.default
+}
+
+async function ensureArtifactClient(): Promise<ArtifactClient> {
+  if (!artifactClientPromise) {
+    artifactClientPromise = loadArtifactClient()
+  }
+  return artifactClientPromise
+}
+
+function artifactPageUrl(artifactId: number): string {
+  const { owner, repo } = github.context.repo
+  return `https://github.com/${owner}/${repo}/actions/runs/${github.context.runId}/artifacts/${artifactId}`
+}
+
+// GitHub strips `data:` URIs from `<img>` tags in both PR comments and job
+// summaries, so a locally-rendered chart can't be embedded inline. Instead we
+// upload the PNG as a workflow artifact and link to its page.
+async function renderAndUploadChart(
+  config: ChartConfiguration<'line'>,
+  artifactName: string
 ): Promise<string> {
   const skiaCanvas = await ensureSkiaCanvas()
   Object.assign(global, { Image: skiaCanvas.Image })
@@ -145,10 +183,34 @@ async function renderChartToDataUri(
     canvasEl.getContext('2d') as unknown as ChartItem,
     config
   )
-  const dataUri = canvasEl.toDataURL('png')
+  const png = canvasEl.toBufferSync('png')
   chart.destroy()
 
-  return dataUri
+  const tempDir = fs.mkdtempSync(
+    path.join(
+      process.env.RUNNER_TEMP || os.tmpdir(),
+      'workflow-telemetry-chart-'
+    )
+  )
+  try {
+    const filePath = path.join(tempDir, `${artifactName}.png`)
+    fs.writeFileSync(filePath, png)
+
+    const artifactClient = await ensureArtifactClient()
+    const { id } = await artifactClient.uploadArtifact(
+      artifactName,
+      [filePath],
+      tempDir,
+      { compressionLevel: 0 }
+    )
+    if (!id) {
+      throw new Error(`Failed to upload chart artifact '${artifactName}'`)
+    }
+
+    return artifactPageUrl(id)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
 }
 
 function formatTime(epochMillis: number): string {
@@ -200,7 +262,9 @@ async function triggerStatCollect(): Promise<void> {
   }
 }
 
-async function reportWorkflowMetrics(): Promise<string> {
+async function reportWorkflowMetrics(
+  currentJob: WorkflowJobType
+): Promise<string> {
   const theme: string = core.getInput('theme', { required: false })
   let axisColor = BLACK
   switch (theme) {
@@ -214,6 +278,9 @@ async function reportWorkflowMetrics(): Promise<string> {
       core.warning(`Invalid theme: ${theme}`)
   }
 
+  const artifactName = (chart: string): string =>
+    `workflow-telemetry-${currentJob.id}-${chart}`
+
   const { userLoadX, systemLoadX } = await getCPUStats()
   const { activeMemoryX, availableMemoryX } = await getMemoryStats()
   const { networkReadX, networkWriteX } = await getNetworkStats()
@@ -222,22 +289,25 @@ async function reportWorkflowMetrics(): Promise<string> {
 
   const cpuLoad =
     userLoadX && userLoadX.length && systemLoadX && systemLoadX.length
-      ? await getStackedAreaGraph({
-          label: 'CPU Load (%)',
-          axisColor,
-          areas: [
-            {
-              label: 'User Load',
-              color: '#e41a1c99',
-              points: userLoadX
-            },
-            {
-              label: 'System Load',
-              color: '#ff7f0099',
-              points: systemLoadX
-            }
-          ]
-        })
+      ? await getStackedAreaGraph(
+          {
+            label: 'CPU Load (%)',
+            axisColor,
+            areas: [
+              {
+                label: 'User Load',
+                color: '#e41a1c99',
+                points: userLoadX
+              },
+              {
+                label: 'System Load',
+                color: '#ff7f0099',
+                points: systemLoadX
+              }
+            ]
+          },
+          artifactName('cpu-load')
+        )
       : null
 
   const memoryUsage =
@@ -245,108 +315,122 @@ async function reportWorkflowMetrics(): Promise<string> {
     activeMemoryX.length &&
     availableMemoryX &&
     availableMemoryX.length
-      ? await getStackedAreaGraph({
-          label: 'Memory Usage (MB)',
-          axisColor,
-          areas: [
-            {
-              label: 'Used',
-              color: '#377eb899',
-              points: activeMemoryX
-            },
-            {
-              label: 'Free',
-              color: '#4daf4a99',
-              points: availableMemoryX
-            }
-          ]
-        })
+      ? await getStackedAreaGraph(
+          {
+            label: 'Memory Usage (MB)',
+            axisColor,
+            areas: [
+              {
+                label: 'Used',
+                color: '#377eb899',
+                points: activeMemoryX
+              },
+              {
+                label: 'Free',
+                color: '#4daf4a99',
+                points: availableMemoryX
+              }
+            ]
+          },
+          artifactName('memory-usage')
+        )
       : null
 
   const networkIORead =
     networkReadX && networkReadX.length
-      ? await getLineGraph({
-          label: 'Network I/O Read (MB)',
-          axisColor,
-          line: {
-            label: 'Read',
-            color: '#be4d25',
-            points: networkReadX
-          }
-        })
+      ? await getLineGraph(
+          {
+            label: 'Network I/O Read (MB)',
+            axisColor,
+            line: {
+              label: 'Read',
+              color: '#be4d25',
+              points: networkReadX
+            }
+          },
+          artifactName('network-io-read')
+        )
       : null
 
   const networkIOWrite =
     networkWriteX && networkWriteX.length
-      ? await getLineGraph({
-          label: 'Network I/O Write (MB)',
-          axisColor,
-          line: {
-            label: 'Write',
-            color: '#6c25be',
-            points: networkWriteX
-          }
-        })
+      ? await getLineGraph(
+          {
+            label: 'Network I/O Write (MB)',
+            axisColor,
+            line: {
+              label: 'Write',
+              color: '#6c25be',
+              points: networkWriteX
+            }
+          },
+          artifactName('network-io-write')
+        )
       : null
 
   const diskIORead =
     diskReadX && diskReadX.length
-      ? await getLineGraph({
-          label: 'Disk I/O Read (MB)',
-          axisColor,
-          line: {
-            label: 'Read',
-            color: '#be4d25',
-            points: diskReadX
-          }
-        })
+      ? await getLineGraph(
+          {
+            label: 'Disk I/O Read (MB)',
+            axisColor,
+            line: {
+              label: 'Read',
+              color: '#be4d25',
+              points: diskReadX
+            }
+          },
+          artifactName('disk-io-read')
+        )
       : null
 
   const diskIOWrite =
     diskWriteX && diskWriteX.length
-      ? await getLineGraph({
-          label: 'Disk I/O Write (MB)',
-          axisColor,
-          line: {
-            label: 'Write',
-            color: '#6c25be',
-            points: diskWriteX
-          }
-        })
+      ? await getLineGraph(
+          {
+            label: 'Disk I/O Write (MB)',
+            axisColor,
+            line: {
+              label: 'Write',
+              color: '#6c25be',
+              points: diskWriteX
+            }
+          },
+          artifactName('disk-io-write')
+        )
       : null
 
   const diskSizeUsage =
     diskUsedX && diskUsedX.length && diskAvailableX && diskAvailableX.length
-      ? await getStackedAreaGraph({
-          label: 'Disk Usage (MB)',
-          axisColor,
-          areas: [
-            {
-              label: 'Used',
-              color: '#377eb899',
-              points: diskUsedX
-            },
-            {
-              label: 'Free',
-              color: '#4daf4a99',
-              points: diskAvailableX
-            }
-          ]
-        })
+      ? await getStackedAreaGraph(
+          {
+            label: 'Disk Usage (MB)',
+            axisColor,
+            areas: [
+              {
+                label: 'Used',
+                color: '#377eb899',
+                points: diskUsedX
+              },
+              {
+                label: 'Free',
+                color: '#4daf4a99',
+                points: diskAvailableX
+              }
+            ]
+          },
+          artifactName('disk-size-usage')
+        )
       : null
 
   const postContentItems: string[] = []
   if (cpuLoad) {
-    postContentItems.push(
-      '### CPU Metrics',
-      `<img alt="${cpuLoad.id}" src="${cpuLoad.dataUri}" />`,
-      ''
-    )
+    postContentItems.push('### CPU Metrics', `[View chart](${cpuLoad.url})`, '')
   }
   if (memoryUsage) {
     postContentItems.push(
       '### Memory Metrics',
-      `<img alt="${memoryUsage.id}" src="${memoryUsage.dataUri}" />`,
+      `[View chart](${memoryUsage.url})`,
       ''
     )
   }
@@ -359,18 +443,18 @@ async function reportWorkflowMetrics(): Promise<string> {
   }
   if (networkIORead && networkIOWrite) {
     postContentItems.push(
-      `| Network I/O   | <img alt="${networkIORead.id}" src="${networkIORead.dataUri}" />        | <img alt="${networkIOWrite.id}" src="${networkIOWrite.dataUri}" />        |`
+      `| Network I/O   | [View chart](${networkIORead.url})        | [View chart](${networkIOWrite.url})        |`
     )
   }
   if (diskIORead && diskIOWrite) {
     postContentItems.push(
-      `| Disk I/O      | <img alt="${diskIORead.id}" src="${diskIORead.dataUri}" />              | <img alt="${diskIOWrite.id}" src="${diskIOWrite.dataUri}" />              |`
+      `| Disk I/O      | [View chart](${diskIORead.url})              | [View chart](${diskIOWrite.url})              |`
     )
   }
   if (diskSizeUsage) {
     postContentItems.push(
       '### Disk Size Metrics',
-      `<img alt="${diskSizeUsage.id}" src="${diskSizeUsage.dataUri}" />`,
+      `[View chart](${diskSizeUsage.url})`,
       ''
     )
   }
@@ -519,7 +603,8 @@ async function getDiskSizeStats(): Promise<ProcessedDiskSizeStats> {
 }
 
 async function getLineGraph(
-  options: LineGraphOptions
+  options: LineGraphOptions,
+  artifactName: string
 ): Promise<GraphResponse | undefined> {
   const config: ChartConfiguration<'line'> = {
     type: 'line',
@@ -541,8 +626,8 @@ async function getLineGraph(
   }
 
   try {
-    const dataUri = await renderChartToDataUri(config)
-    return { id: slugify(options.label), dataUri }
+    const url = await renderAndUploadChart(config, artifactName)
+    return { id: slugify(options.label), url }
   } catch (error: any) {
     logger.error(error)
     logger.error(`getLineGraph ${JSON.stringify(config)}`)
@@ -551,7 +636,8 @@ async function getLineGraph(
 }
 
 async function getStackedAreaGraph(
-  options: StackedAreaGraphOptions
+  options: StackedAreaGraphOptions,
+  artifactName: string
 ): Promise<GraphResponse | undefined> {
   const labels = options.areas.length
     ? options.areas[0].points.map(point => formatTime(point.x))
@@ -575,8 +661,8 @@ async function getStackedAreaGraph(
   }
 
   try {
-    const dataUri = await renderChartToDataUri(config)
-    return { id: slugify(options.label), dataUri }
+    const url = await renderAndUploadChart(config, artifactName)
+    return { id: slugify(options.label), url }
   } catch (error: any) {
     logger.error(error)
     logger.error(`getStackedAreaGraph ${JSON.stringify(config)}`)
@@ -650,7 +736,7 @@ export async function report(
   logger.info(`Reporting stat collector result ...`)
 
   try {
-    const postContent: string = await reportWorkflowMetrics()
+    const postContent: string = await reportWorkflowMetrics(currentJob)
 
     logger.info(`Reported stat collector result`)
 

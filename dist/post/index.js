@@ -8023,14 +8023,17 @@ function useColors() {
 		return false;
 	}
 
+	let m;
+
 	// Is webkit? http://stackoverflow.com/a/16459606/376773
 	// document is undefined in react-native: https://github.com/facebook/react-native/pull/1632
+	// eslint-disable-next-line no-return-assign
 	return (typeof document !== 'undefined' && document.documentElement && document.documentElement.style && document.documentElement.style.WebkitAppearance) ||
 		// Is firebug? http://stackoverflow.com/a/398120/376773
 		(typeof window !== 'undefined' && window.console && (window.console.firebug || (window.console.exception && window.console.table))) ||
 		// Is firefox >= v31?
 		// https://developer.mozilla.org/en-US/docs/Tools/Web_Console#Styling_messages
-		(typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/) && parseInt(RegExp.$1, 10) >= 31) ||
+		(typeof navigator !== 'undefined' && navigator.userAgent && (m = navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/)) && parseInt(m[1], 10) >= 31) ||
 		// Double check webkit in userAgent just in case we are in a worker
 		(typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/));
 }
@@ -8114,7 +8117,7 @@ function save(namespaces) {
 function load() {
 	let r;
 	try {
-		r = exports.storage.getItem('debug');
+		r = exports.storage.getItem('debug') || exports.storage.getItem('DEBUG') ;
 	} catch (error) {
 		// Swallow
 		// XXX (@Qix-) should we be logging these?
@@ -8340,24 +8343,62 @@ function setup(env) {
 		createDebug.names = [];
 		createDebug.skips = [];
 
-		let i;
-		const split = (typeof namespaces === 'string' ? namespaces : '').split(/[\s,]+/);
-		const len = split.length;
+		const split = (typeof namespaces === 'string' ? namespaces : '')
+			.trim()
+			.replace(/\s+/g, ',')
+			.split(',')
+			.filter(Boolean);
 
-		for (i = 0; i < len; i++) {
-			if (!split[i]) {
-				// ignore empty strings
-				continue;
-			}
-
-			namespaces = split[i].replace(/\*/g, '.*?');
-
-			if (namespaces[0] === '-') {
-				createDebug.skips.push(new RegExp('^' + namespaces.slice(1) + '$'));
+		for (const ns of split) {
+			if (ns[0] === '-') {
+				createDebug.skips.push(ns.slice(1));
 			} else {
-				createDebug.names.push(new RegExp('^' + namespaces + '$'));
+				createDebug.names.push(ns);
 			}
 		}
+	}
+
+	/**
+	 * Checks if the given string matches a namespace template, honoring
+	 * asterisks as wildcards.
+	 *
+	 * @param {String} search
+	 * @param {String} template
+	 * @return {Boolean}
+	 */
+	function matchesTemplate(search, template) {
+		let searchIndex = 0;
+		let templateIndex = 0;
+		let starIndex = -1;
+		let matchIndex = 0;
+
+		while (searchIndex < search.length) {
+			if (templateIndex < template.length && (template[templateIndex] === search[searchIndex] || template[templateIndex] === '*')) {
+				// Match character or proceed with wildcard
+				if (template[templateIndex] === '*') {
+					starIndex = templateIndex;
+					matchIndex = searchIndex;
+					templateIndex++; // Skip the '*'
+				} else {
+					searchIndex++;
+					templateIndex++;
+				}
+			} else if (starIndex !== -1) { // eslint-disable-line no-negated-condition
+				// Backtrack to the last '*' and try to match more characters
+				templateIndex = starIndex + 1;
+				matchIndex++;
+				searchIndex = matchIndex;
+			} else {
+				return false; // No match
+			}
+		}
+
+		// Handle trailing '*' in template
+		while (templateIndex < template.length && template[templateIndex] === '*') {
+			templateIndex++;
+		}
+
+		return templateIndex === template.length;
 	}
 
 	/**
@@ -8368,8 +8409,8 @@ function setup(env) {
 	*/
 	function disable() {
 		const namespaces = [
-			...createDebug.names.map(toNamespace),
-			...createDebug.skips.map(toNamespace).map(namespace => '-' + namespace)
+			...createDebug.names,
+			...createDebug.skips.map(namespace => '-' + namespace)
 		].join(',');
 		createDebug.enable('');
 		return namespaces;
@@ -8383,39 +8424,19 @@ function setup(env) {
 	* @api public
 	*/
 	function enabled(name) {
-		if (name[name.length - 1] === '*') {
-			return true;
-		}
-
-		let i;
-		let len;
-
-		for (i = 0, len = createDebug.skips.length; i < len; i++) {
-			if (createDebug.skips[i].test(name)) {
+		for (const skip of createDebug.skips) {
+			if (matchesTemplate(name, skip)) {
 				return false;
 			}
 		}
 
-		for (i = 0, len = createDebug.names.length; i < len; i++) {
-			if (createDebug.names[i].test(name)) {
+		for (const ns of createDebug.names) {
+			if (matchesTemplate(name, ns)) {
 				return true;
 			}
 		}
 
 		return false;
-	}
-
-	/**
-	* Convert regexp to namespace
-	*
-	* @param {RegExp} regxep
-	* @return {String} namespace
-	* @api private
-	*/
-	function toNamespace(regexp) {
-		return regexp.toString()
-			.substring(2, regexp.toString().length - 2)
-			.replace(/\.\*\?$/, '*');
 	}
 
 	/**
@@ -8659,11 +8680,11 @@ function getDate() {
 }
 
 /**
- * Invokes `util.format()` with the specified arguments and writes to stderr.
+ * Invokes `util.formatWithOptions()` with the specified arguments and writes to stderr.
  */
 
 function log(...args) {
-	return process.stderr.write(util.format(...args) + '\n');
+	return process.stderr.write(util.formatWithOptions(exports.inspectOpts, ...args) + '\n');
 }
 
 /**
@@ -11184,7 +11205,7 @@ var y = d * 365.25;
  * @api public
  */
 
-module.exports = function(val, options) {
+module.exports = function (val, options) {
   options = options || {};
   var type = typeof val;
   if (type === 'string' && val.length > 0) {
@@ -58509,8 +58530,8 @@ function getCurrentJob() {
     });
 }
 function reportAll(currentJob, content) {
-    var _a;
     return __awaiter(this, void 0, void 0, function* () {
+        var _a;
         logger.info(`Reporting all content ...`);
         logger.debug(`Workflow - Job: ${workflow} - ${job}`);
         const jobUrl = `https://github.com/${repo.owner}/${repo.repo}/runs/${currentJob.id}?check_suite_focus=true`;
@@ -58666,8 +58687,8 @@ const SYS_PROCS_TO_BE_IGNORED = new Set([
     'whoami'
 ]);
 function parse(filePath, procEventParseOptions) {
-    var _a, e_1, _b, _c;
     return __awaiter(this, void 0, void 0, function* () {
+        var _a, e_1, _b, _c;
         const minDuration = (procEventParseOptions && procEventParseOptions.minDuration) || -1;
         const traceSystemProcesses = (procEventParseOptions && procEventParseOptions.traceSystemProcesses) ||
             false;
@@ -58872,8 +58893,8 @@ function getExtraProcessInfo(command) {
 }
 ///////////////////////////
 function start() {
-    var _a;
     return __awaiter(this, void 0, void 0, function* () {
+        var _a;
         logger.info(`Starting process tracer ...`);
         try {
             const procTracerBinaryName = yield getProcessTracerBinaryName();
@@ -59075,12 +59096,14 @@ exports.report = exports.finish = exports.start = void 0;
 const child_process_1 = __nccwpck_require__(2081);
 const crypto_1 = __importDefault(__nccwpck_require__(6113));
 const fs_1 = __importDefault(__nccwpck_require__(7147));
+const os_1 = __importDefault(__nccwpck_require__(2037));
 const path_1 = __importDefault(__nccwpck_require__(1017));
 const zlib_1 = __importDefault(__nccwpck_require__(9796));
 const axios_1 = __importDefault(__nccwpck_require__(8757));
 const chart_js_1 = __nccwpck_require__(4879);
 const detect_libc_1 = __nccwpck_require__(4889);
 const core = __importStar(__nccwpck_require__(2186));
+const github = __importStar(__nccwpck_require__(5438));
 const logger = __importStar(__nccwpck_require__(4636));
 chart_js_1.Chart.register(...chart_js_1.registerables);
 const STAT_SERVER_PORT = 7777;
@@ -59163,15 +59186,58 @@ function ensureSkiaCanvas() {
         return skiaCanvasPromise;
     });
 }
-function renderChartToDataUri(config) {
+let artifactClientPromise = null;
+// `@actions/artifact`'s package.json `exports` only declares an `import`
+// condition (it ships ESM only), so a normal static or dynamic import gets
+// downleveled by TypeScript's CommonJS output into a `require()` call that
+// fails at runtime with ERR_PACKAGE_PATH_NOT_EXPORTED - the same restriction
+// also stops ncc from bundling it. Hiding the specifier inside a `Function`
+// keeps the compiler from touching it, so this performs a genuine ESM
+// `import()` at runtime instead.
+function loadArtifactClient() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const importESM = new Function('specifier', 'return import(specifier)');
+        const mod = yield importESM('@actions/artifact');
+        return mod.default;
+    });
+}
+function ensureArtifactClient() {
+    return __awaiter(this, void 0, void 0, function* () {
+        if (!artifactClientPromise) {
+            artifactClientPromise = loadArtifactClient();
+        }
+        return artifactClientPromise;
+    });
+}
+function artifactPageUrl(artifactId) {
+    const { owner, repo } = github.context.repo;
+    return `https://github.com/${owner}/${repo}/actions/runs/${github.context.runId}/artifacts/${artifactId}`;
+}
+// GitHub strips `data:` URIs from `<img>` tags in both PR comments and job
+// summaries, so a locally-rendered chart can't be embedded inline. Instead we
+// upload the PNG as a workflow artifact and link to its page.
+function renderAndUploadChart(config, artifactName) {
     return __awaiter(this, void 0, void 0, function* () {
         const skiaCanvas = yield ensureSkiaCanvas();
         Object.assign(global, { Image: skiaCanvas.Image });
         const canvasEl = new skiaCanvas.Canvas(CHART_WIDTH, CHART_HEIGHT);
         const chart = new chart_js_1.Chart(canvasEl.getContext('2d'), config);
-        const dataUri = canvasEl.toDataURL('png');
+        const png = canvasEl.toBufferSync('png');
         chart.destroy();
-        return dataUri;
+        const tempDir = fs_1.default.mkdtempSync(path_1.default.join(process.env.RUNNER_TEMP || os_1.default.tmpdir(), 'workflow-telemetry-chart-'));
+        try {
+            const filePath = path_1.default.join(tempDir, `${artifactName}.png`);
+            fs_1.default.writeFileSync(filePath, png);
+            const artifactClient = yield ensureArtifactClient();
+            const { id } = yield artifactClient.uploadArtifact(artifactName, [filePath], tempDir, { compressionLevel: 0 });
+            if (!id) {
+                throw new Error(`Failed to upload chart artifact '${artifactName}'`);
+            }
+            return artifactPageUrl(id);
+        }
+        finally {
+            fs_1.default.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 }
 function formatTime(epochMillis) {
@@ -59215,7 +59281,7 @@ function triggerStatCollect() {
         }
     });
 }
-function reportWorkflowMetrics() {
+function reportWorkflowMetrics(currentJob) {
     return __awaiter(this, void 0, void 0, function* () {
         const theme = core.getInput('theme', { required: false });
         let axisColor = BLACK;
@@ -59229,6 +59295,7 @@ function reportWorkflowMetrics() {
             default:
                 core.warning(`Invalid theme: ${theme}`);
         }
+        const artifactName = (chart) => `workflow-telemetry-${currentJob.id}-${chart}`;
         const { userLoadX, systemLoadX } = yield getCPUStats();
         const { activeMemoryX, availableMemoryX } = yield getMemoryStats();
         const { networkReadX, networkWriteX } = yield getNetworkStats();
@@ -59250,7 +59317,7 @@ function reportWorkflowMetrics() {
                         points: systemLoadX
                     }
                 ]
-            })
+            }, artifactName('cpu-load'))
             : null;
         const memoryUsage = activeMemoryX &&
             activeMemoryX.length &&
@@ -59271,7 +59338,7 @@ function reportWorkflowMetrics() {
                         points: availableMemoryX
                     }
                 ]
-            })
+            }, artifactName('memory-usage'))
             : null;
         const networkIORead = networkReadX && networkReadX.length
             ? yield getLineGraph({
@@ -59282,7 +59349,7 @@ function reportWorkflowMetrics() {
                     color: '#be4d25',
                     points: networkReadX
                 }
-            })
+            }, artifactName('network-io-read'))
             : null;
         const networkIOWrite = networkWriteX && networkWriteX.length
             ? yield getLineGraph({
@@ -59293,7 +59360,7 @@ function reportWorkflowMetrics() {
                     color: '#6c25be',
                     points: networkWriteX
                 }
-            })
+            }, artifactName('network-io-write'))
             : null;
         const diskIORead = diskReadX && diskReadX.length
             ? yield getLineGraph({
@@ -59304,7 +59371,7 @@ function reportWorkflowMetrics() {
                     color: '#be4d25',
                     points: diskReadX
                 }
-            })
+            }, artifactName('disk-io-read'))
             : null;
         const diskIOWrite = diskWriteX && diskWriteX.length
             ? yield getLineGraph({
@@ -59315,7 +59382,7 @@ function reportWorkflowMetrics() {
                     color: '#6c25be',
                     points: diskWriteX
                 }
-            })
+            }, artifactName('disk-io-write'))
             : null;
         const diskSizeUsage = diskUsedX && diskUsedX.length && diskAvailableX && diskAvailableX.length
             ? yield getStackedAreaGraph({
@@ -59333,26 +59400,26 @@ function reportWorkflowMetrics() {
                         points: diskAvailableX
                     }
                 ]
-            })
+            }, artifactName('disk-size-usage'))
             : null;
         const postContentItems = [];
         if (cpuLoad) {
-            postContentItems.push('### CPU Metrics', `<img alt="${cpuLoad.id}" src="${cpuLoad.dataUri}" />`, '');
+            postContentItems.push('### CPU Metrics', `[View chart](${cpuLoad.url})`, '');
         }
         if (memoryUsage) {
-            postContentItems.push('### Memory Metrics', `<img alt="${memoryUsage.id}" src="${memoryUsage.dataUri}" />`, '');
+            postContentItems.push('### Memory Metrics', `[View chart](${memoryUsage.url})`, '');
         }
         if ((networkIORead && networkIOWrite) || (diskIORead && diskIOWrite)) {
             postContentItems.push('### IO Metrics', '|               | Read      | Write     |', '|---            |---        |---        |');
         }
         if (networkIORead && networkIOWrite) {
-            postContentItems.push(`| Network I/O   | <img alt="${networkIORead.id}" src="${networkIORead.dataUri}" />        | <img alt="${networkIOWrite.id}" src="${networkIOWrite.dataUri}" />        |`);
+            postContentItems.push(`| Network I/O   | [View chart](${networkIORead.url})        | [View chart](${networkIOWrite.url})        |`);
         }
         if (diskIORead && diskIOWrite) {
-            postContentItems.push(`| Disk I/O      | <img alt="${diskIORead.id}" src="${diskIORead.dataUri}" />              | <img alt="${diskIOWrite.id}" src="${diskIOWrite.dataUri}" />              |`);
+            postContentItems.push(`| Disk I/O      | [View chart](${diskIORead.url})              | [View chart](${diskIOWrite.url})              |`);
         }
         if (diskSizeUsage) {
-            postContentItems.push('### Disk Size Metrics', `<img alt="${diskSizeUsage.id}" src="${diskSizeUsage.dataUri}" />`, '');
+            postContentItems.push('### Disk Size Metrics', `[View chart](${diskSizeUsage.url})`, '');
         }
         return postContentItems.join('\n');
     });
@@ -59473,7 +59540,7 @@ function getDiskSizeStats() {
         return { diskAvailableX, diskUsedX };
     });
 }
-function getLineGraph(options) {
+function getLineGraph(options, artifactName) {
     return __awaiter(this, void 0, void 0, function* () {
         const config = {
             type: 'line',
@@ -59494,8 +59561,8 @@ function getLineGraph(options) {
             options: buildChartOptions(options.axisColor, options.label, false)
         };
         try {
-            const dataUri = yield renderChartToDataUri(config);
-            return { id: slugify(options.label), dataUri };
+            const url = yield renderAndUploadChart(config, artifactName);
+            return { id: slugify(options.label), url };
         }
         catch (error) {
             logger.error(error);
@@ -59504,7 +59571,7 @@ function getLineGraph(options) {
         }
     });
 }
-function getStackedAreaGraph(options) {
+function getStackedAreaGraph(options, artifactName) {
     return __awaiter(this, void 0, void 0, function* () {
         const labels = options.areas.length
             ? options.areas[0].points.map(point => formatTime(point.x))
@@ -59526,8 +59593,8 @@ function getStackedAreaGraph(options) {
             options: buildChartOptions(options.axisColor, options.label, true)
         };
         try {
-            const dataUri = yield renderChartToDataUri(config);
-            return { id: slugify(options.label), dataUri };
+            const url = yield renderAndUploadChart(config, artifactName);
+            return { id: slugify(options.label), url };
         }
         catch (error) {
             logger.error(error);
@@ -59589,7 +59656,7 @@ function report(currentJob) {
     return __awaiter(this, void 0, void 0, function* () {
         logger.info(`Reporting stat collector result ...`);
         try {
-            const postContent = yield reportWorkflowMetrics();
+            const postContent = yield reportWorkflowMetrics(currentJob);
             logger.info(`Reported stat collector result`);
             return postContent;
         }
