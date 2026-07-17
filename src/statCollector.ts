@@ -1,6 +1,10 @@
-import { ChildProcess, spawn } from 'child_process'
+import { ChildProcess, execFileSync, spawn } from 'child_process'
+import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import axios from 'axios'
+import { Chart, registerables } from 'chart.js'
+import type { ChartConfiguration, ChartItem, ChartOptions } from 'chart.js'
 import * as core from '@actions/core'
 import {
   CPUStats,
@@ -20,12 +24,127 @@ import {
   WorkflowJobType
 } from './interfaces'
 import * as logger from './logger'
-import { log } from 'console'
+
+Chart.register(...registerables)
 
 const STAT_SERVER_PORT = 7777
 
 const BLACK = '#000000'
 const WHITE = '#FFFFFF'
+
+const CHART_WIDTH = 800
+const CHART_HEIGHT = 400
+
+// Pinned so every run installs the same, already-verified `canvas` build.
+const CANVAS_PACKAGE_VERSION = '3.2.3'
+
+interface CanvasLike {
+  getContext(contextId: '2d'): unknown
+  toBuffer(mimeType: string): Buffer
+}
+
+interface CanvasModule {
+  createCanvas(width: number, height: number): CanvasLike
+  Image: new () => unknown
+}
+
+let canvasModulePromise: Promise<CanvasModule> | null = null
+
+// `canvas` ships a native addon, so it can't be embedded in the ncc bundle
+// (the bundle is built once but runs on whichever OS/arch the workflow uses).
+// Installing it on demand lets npm fetch the prebuilt binary that matches
+// the actual runner, without depending on an external chart-rendering service.
+async function ensureCanvasModule(): Promise<CanvasModule> {
+  if (!canvasModulePromise) {
+    canvasModulePromise = installAndLoadCanvasModule()
+  }
+  return canvasModulePromise
+}
+
+async function installAndLoadCanvasModule(): Promise<CanvasModule> {
+  const installDir = path.join(
+    process.env.RUNNER_TEMP || os.tmpdir(),
+    'workflow-telemetry-action-canvas'
+  )
+  fs.mkdirSync(installDir, { recursive: true })
+
+  const canvasEntry = path.join(installDir, 'node_modules', 'canvas')
+  if (!fs.existsSync(path.join(canvasEntry, 'package.json'))) {
+    logger.debug(
+      `Installing canvas@${CANVAS_PACKAGE_VERSION} into ${installDir} ...`
+    )
+    execFileSync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      [
+        'install',
+        `canvas@${CANVAS_PACKAGE_VERSION}`,
+        '--no-save',
+        '--no-package-lock',
+        '--no-audit',
+        '--no-fund',
+        '--loglevel=error'
+      ],
+      { cwd: installDir, stdio: 'pipe' }
+    )
+    logger.debug(`Installed canvas@${CANVAS_PACKAGE_VERSION}`)
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-dynamic-require
+  return require(canvasEntry)
+}
+
+async function renderChartToDataUri(
+  config: ChartConfiguration<'line'>
+): Promise<string> {
+  const canvasModule = await ensureCanvasModule()
+  Object.assign(global, { Image: canvasModule.Image })
+
+  const canvasEl = canvasModule.createCanvas(CHART_WIDTH, CHART_HEIGHT)
+  const chart = new Chart(canvasEl.getContext('2d') as ChartItem, config)
+  const buffer = canvasEl.toBuffer('image/png')
+  chart.destroy()
+
+  return `data:image/png;base64,${buffer.toString('base64')}`
+}
+
+function formatTime(epochMillis: number): string {
+  const date = new Date(epochMillis)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
+}
+
+function slugify(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+}
+
+function buildChartOptions(
+  axisColor: string,
+  yLabel: string,
+  stacked: boolean
+): ChartOptions<'line'> {
+  return {
+    responsive: false,
+    animation: false,
+    devicePixelRatio: 1,
+    scales: {
+      x: {
+        title: { display: true, text: 'Time', color: axisColor },
+        ticks: { color: axisColor, maxRotation: 0, autoSkip: true },
+        grid: { color: `${axisColor}33` }
+      },
+      y: {
+        stacked,
+        beginAtZero: true,
+        title: { display: true, text: yLabel, color: axisColor },
+        ticks: { color: axisColor },
+        grid: { color: `${axisColor}33` }
+      }
+    },
+    plugins: {
+      legend: { labels: { color: axisColor } }
+    }
+  }
+}
 
 async function triggerStatCollect(): Promise<void> {
   logger.debug('Triggering stat collect ...')
@@ -176,14 +295,14 @@ async function reportWorkflowMetrics(): Promise<string> {
   if (cpuLoad) {
     postContentItems.push(
       '### CPU Metrics',
-      `![${cpuLoad.id}](${cpuLoad.url})`,
+      `<img alt="${cpuLoad.id}" src="${cpuLoad.dataUri}" />`,
       ''
     )
   }
   if (memoryUsage) {
     postContentItems.push(
       '### Memory Metrics',
-      `![${memoryUsage.id}](${memoryUsage.url})`,
+      `<img alt="${memoryUsage.id}" src="${memoryUsage.dataUri}" />`,
       ''
     )
   }
@@ -196,18 +315,18 @@ async function reportWorkflowMetrics(): Promise<string> {
   }
   if (networkIORead && networkIOWrite) {
     postContentItems.push(
-      `| Network I/O   | ![${networkIORead.id}](${networkIORead.url})        | ![${networkIOWrite.id}](${networkIOWrite.url})        |`
+      `| Network I/O   | <img alt="${networkIORead.id}" src="${networkIORead.dataUri}" />        | <img alt="${networkIOWrite.id}" src="${networkIOWrite.dataUri}" />        |`
     )
   }
   if (diskIORead && diskIOWrite) {
     postContentItems.push(
-      `| Disk I/O      | ![${diskIORead.id}](${diskIORead.url})              | ![${diskIOWrite.id}](${diskIOWrite.url})              |`
+      `| Disk I/O      | <img alt="${diskIORead.id}" src="${diskIORead.dataUri}" />              | <img alt="${diskIOWrite.id}" src="${diskIOWrite.dataUri}" />              |`
     )
   }
   if (diskSizeUsage) {
     postContentItems.push(
       '### Disk Size Metrics',
-      `![${diskSizeUsage.id}](${diskSizeUsage.url})`,
+      `<img alt="${diskSizeUsage.id}" src="${diskSizeUsage.dataUri}" />`,
       ''
     )
   }
@@ -355,171 +474,70 @@ async function getDiskSizeStats(): Promise<ProcessedDiskSizeStats> {
   return { diskAvailableX, diskUsedX }
 }
 
-async function getLineGraph(options: LineGraphOptions): Promise<GraphResponse> {
-  const chartConfig = {
+async function getLineGraph(
+  options: LineGraphOptions
+): Promise<GraphResponse | undefined> {
+  const config: ChartConfiguration<'line'> = {
     type: 'line',
     data: {
+      labels: options.line.points.map(point => formatTime(point.x)),
       datasets: [
         {
           label: options.line.label,
-          data: options.line.points,
+          data: options.line.points.map(point => point.y),
           borderColor: options.line.color,
-          backgroundColor: options.line.color + '33',
+          backgroundColor: `${options.line.color}33`,
           fill: false,
-          tension: 0.1
+          tension: 0.1,
+          pointRadius: 0
         }
       ]
     },
-    options: {
-      scales: {
-        xAxes: [
-          {
-            type: 'time',
-            time: {
-              displayFormats: {
-                second: 'HH:mm:ss',
-                minute: 'HH:mm:ss',
-                hour: 'HH:mm'
-              }
-            },
-            scaleLabel: {
-              display: true,
-              labelString: 'Time',
-              fontColor: options.axisColor
-            },
-            ticks: {
-              fontColor: options.axisColor
-            }
-          }
-        ],
-        yAxes: [
-          {
-            scaleLabel: {
-              display: true,
-              labelString: options.label,
-              fontColor: options.axisColor
-            },
-            ticks: {
-              fontColor: options.axisColor,
-              beginAtZero: true
-            }
-          }
-        ]
-      },
-      legend: {
-        labels: {
-          fontColor: options.axisColor
-        }
-      }
-    }
+    options: buildChartOptions(options.axisColor, options.label, false)
   }
 
-  const payload = {
-    width: 800,
-    height: 400,
-    chart: chartConfig
-  }
-
-  let response = null
   try {
-    response = await axios.post('https://quickchart.io/chart/create', payload)
+    const dataUri = await renderChartToDataUri(config)
+    return { id: slugify(options.label), dataUri }
   } catch (error: any) {
     logger.error(error)
-    logger.error(`getLineGraph ${JSON.stringify(payload)}`)
+    logger.error(`getLineGraph ${JSON.stringify(config)}`)
+    return undefined
   }
-
-  if (response?.data?.success && response?.data?.url) {
-    const urlParts = response.data.url.split('/')
-    const id = urlParts[urlParts.length - 1] || 'line-chart'
-    return { id, url: response.data.url }
-  }
-
-  return response?.data
 }
 
 async function getStackedAreaGraph(
   options: StackedAreaGraphOptions
-): Promise<GraphResponse> {
-  const datasets = options.areas.map((area, index) => ({
-    label: area.label,
-    data: area.points,
-    borderColor: area.color,
-    backgroundColor: area.color,
-    fill: index === 0 ? 'origin' : '-1',
-    tension: 0.1
-  }))
+): Promise<GraphResponse | undefined> {
+  const labels = options.areas.length
+    ? options.areas[0].points.map(point => formatTime(point.x))
+    : []
 
-  const chartConfig = {
+  const config: ChartConfiguration<'line'> = {
     type: 'line',
     data: {
-      datasets
+      labels,
+      datasets: options.areas.map((area, index) => ({
+        label: area.label,
+        data: area.points.map(point => point.y),
+        borderColor: area.color,
+        backgroundColor: area.color,
+        fill: index === 0 ? 'origin' : '-1',
+        tension: 0.1,
+        pointRadius: 0
+      }))
     },
-    options: {
-      scales: {
-        xAxes: [
-          {
-            type: 'time',
-            time: {
-              displayFormats: {
-                second: 'HH:mm:ss',
-                minute: 'HH:mm:ss',
-                hour: 'HH:mm'
-              }
-            },
-            scaleLabel: {
-              display: true,
-              labelString: 'Time',
-              fontColor: options.axisColor
-            },
-            ticks: {
-              fontColor: options.axisColor
-            }
-          }
-        ],
-        yAxes: [
-          {
-            stacked: true,
-            scaleLabel: {
-              display: true,
-              labelString: options.label,
-              fontColor: options.axisColor
-            },
-            ticks: {
-              fontColor: options.axisColor,
-              beginAtZero: true
-            }
-          }
-        ]
-      },
-      legend: {
-        labels: {
-          fontColor: options.axisColor
-        }
-      }
-    }
+    options: buildChartOptions(options.axisColor, options.label, true)
   }
 
-  const payload = {
-    width: 800,
-    height: 400,
-    chart: chartConfig
-  }
-
-  let response = null
   try {
-    response = await axios.post('https://quickchart.io/chart/create', payload)
+    const dataUri = await renderChartToDataUri(config)
+    return { id: slugify(options.label), dataUri }
   } catch (error: any) {
     logger.error(error)
-    logger.error(`getStackedAreaGraph ${JSON.stringify(payload)}`)
+    logger.error(`getStackedAreaGraph ${JSON.stringify(config)}`)
+    return undefined
   }
-
-  if (response?.data?.success && response?.data?.url) {
-    const urlParts = response.data.url.split('/')
-    const id = urlParts[urlParts.length - 1] || 'stacked-area-chart'
-    return { id, url: response.data.url }
-  }
-
-  return response?.data
 }
 
 ///////////////////////////

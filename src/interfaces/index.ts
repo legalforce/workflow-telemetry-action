@@ -89,7 +89,7 @@ export interface StackedAreaGraphOptions {
 
 export interface GraphResponse {
   readonly id: string
-  readonly url: string
+  readonly dataUri: string
 }
 
 export interface CompletedCommand {
