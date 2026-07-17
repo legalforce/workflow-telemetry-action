@@ -3481,14 +3481,32 @@ var Writable = (__nccwpck_require__(2781).Writable);
 var assert = __nccwpck_require__(9491);
 var debug = __nccwpck_require__(1133);
 
+// Preventive platform detection
+// istanbul ignore next
+(function detectUnsupportedEnvironment() {
+  var looksLikeNode = typeof process !== "undefined";
+  var looksLikeBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+  var looksLikeV8 = isFunction(Error.captureStackTrace);
+  if (!looksLikeNode && (looksLikeBrowser || !looksLikeV8)) {
+    console.warn("The follow-redirects package should be excluded from browser builds.");
+  }
+}());
+
 // Whether to use the native URL object or the legacy url module
 var useNativeURL = false;
 try {
-  assert(new URL());
+  assert(new URL(""));
 }
 catch (error) {
   useNativeURL = error.code === "ERR_INVALID_URL";
 }
+
+// HTTP headers to drop across HTTP/HTTPS and domain boundaries
+var sensitiveHeaders = [
+  "Authorization",
+  "Proxy-Authorization",
+  "Cookie",
+];
 
 // URL fields to preserve in copy operations
 var preservedUrlFields = [
@@ -3570,6 +3588,11 @@ function RedirectableRequest(options, responseCallback) {
         cause : new RedirectionError({ cause: cause }));
     }
   };
+
+  // Create filter for sensitive HTTP headers
+  this._headerFilter = new RegExp("^(?:" +
+      sensitiveHeaders.concat(options.sensitiveHeaders).map(escapeRegex).join("|") +
+    ")$", "i");
 
   // Perform the first request
   this._performRequest();
@@ -3754,6 +3777,9 @@ RedirectableRequest.prototype._sanitizeOptions = function (options) {
   if (!options.headers) {
     options.headers = {};
   }
+  if (!isArray(options.sensitiveHeaders)) {
+    options.sensitiveHeaders = [];
+  }
 
   // Since http.request treats host as an alias of hostname,
   // but the url module interprets host as hostname plus port,
@@ -3821,17 +3847,17 @@ RedirectableRequest.prototype._performRequest = function () {
     var buffers = this._requestBodyBuffers;
     (function writeNext(error) {
       // Only write if this request has not been redirected yet
-      /* istanbul ignore else */
+      // istanbul ignore else
       if (request === self._currentRequest) {
         // Report any write errors
-        /* istanbul ignore if */
+        // istanbul ignore if
         if (error) {
           self.emit("error", error);
         }
         // Write the next buffer if there are still left
         else if (i < buffers.length) {
           var buffer = buffers[i++];
-          /* istanbul ignore else */
+          // istanbul ignore else
           if (!request.finished) {
             request.write(buffer.data, buffer.encoding, writeNext);
           }
@@ -3936,7 +3962,7 @@ RedirectableRequest.prototype._processResponse = function (response) {
      redirectUrl.protocol !== "https:" ||
      redirectUrl.host !== currentHost &&
      !isSubdomain(redirectUrl.host, currentHost)) {
-    removeMatchingHeaders(/^(?:authorization|cookie)$/i, this._options.headers);
+    removeMatchingHeaders(this._headerFilter, this._options.headers);
   }
 
   // Evaluate the beforeRedirect callback
@@ -4027,7 +4053,7 @@ function noop() { /* empty */ }
 
 function parseUrl(input) {
   var parsed;
-  /* istanbul ignore else */
+  // istanbul ignore else
   if (useNativeURL) {
     parsed = new URL(input);
   }
@@ -4042,7 +4068,7 @@ function parseUrl(input) {
 }
 
 function resolveUrl(relative, base) {
-  /* istanbul ignore next */
+  // istanbul ignore next
   return useNativeURL ? new URL(relative, base) : parseUrl(url.resolve(base, relative));
 }
 
@@ -4091,7 +4117,10 @@ function removeMatchingHeaders(regex, headers) {
 function createErrorType(code, message, baseClass) {
   // Create constructor
   function CustomError(properties) {
-    Error.captureStackTrace(this, this.constructor);
+    // istanbul ignore else
+    if (isFunction(Error.captureStackTrace)) {
+      Error.captureStackTrace(this, this.constructor);
+    }
     Object.assign(this, properties || {});
     this.code = code;
     this.message = this.cause ? message + ": " + this.cause.message : message;
@@ -4126,6 +4155,10 @@ function isSubdomain(subdomain, domain) {
   return dot > 0 && subdomain[dot] === "." && subdomain.endsWith(domain);
 }
 
+function isArray(value) {
+  return value instanceof Array;
+}
+
 function isString(value) {
   return typeof value === "string" || value instanceof String;
 }
@@ -4140,6 +4173,10 @@ function isBuffer(value) {
 
 function isURL(value) {
   return URL && value instanceof URL;
+}
+
+function escapeRegex(regex) {
+  return regex.replace(/[\]\\/()*+?.$]/g, "\\$&");
 }
 
 // Exports
@@ -28303,7 +28340,6 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.report = exports.finish = exports.start = void 0;
 const child_process_1 = __nccwpck_require__(2081);
 const fs_1 = __importDefault(__nccwpck_require__(7147));
-const os_1 = __importDefault(__nccwpck_require__(2037));
 const path_1 = __importDefault(__nccwpck_require__(1017));
 const axios_1 = __importDefault(__nccwpck_require__(8757));
 const chart_js_1 = __nccwpck_require__(4879);
@@ -28315,52 +28351,49 @@ const BLACK = '#000000';
 const WHITE = '#FFFFFF';
 const CHART_WIDTH = 800;
 const CHART_HEIGHT = 400;
-// Pinned so every run installs the same, already-verified `canvas` build.
-const CANVAS_PACKAGE_VERSION = '3.2.3';
-let canvasModulePromise = null;
-// `canvas` ships a native addon, so it can't be embedded in the ncc bundle
+let skiaCanvasPromise = null;
+// `skia-canvas` ships a native addon that can't be embedded in the ncc bundle
 // (the bundle is built once but runs on whichever OS/arch the workflow uses).
-// Installing it on demand lets npm fetch the prebuilt binary that matches
-// the actual runner, without depending on an external chart-rendering service.
-function ensureCanvasModule() {
+// `skia-canvas` is vendored as a real dependency (see `scripts/vendor-skia-canvas.js`)
+// without its platform-specific binary, so at runtime we fetch just that binary
+// via the package's own installer script, without depending on an external
+// chart-rendering service or re-running a full `npm install`.
+function ensureSkiaCanvas() {
     return __awaiter(this, void 0, void 0, function* () {
-        if (!canvasModulePromise) {
-            canvasModulePromise = installAndLoadCanvasModule();
+        if (!skiaCanvasPromise) {
+            skiaCanvasPromise = loadSkiaCanvas();
         }
-        return canvasModulePromise;
+        return skiaCanvasPromise;
     });
 }
-function installAndLoadCanvasModule() {
+function loadSkiaCanvas() {
     return __awaiter(this, void 0, void 0, function* () {
-        const installDir = path_1.default.join(process.env.RUNNER_TEMP || os_1.default.tmpdir(), 'workflow-telemetry-action-canvas');
-        fs_1.default.mkdirSync(installDir, { recursive: true });
-        const canvasEntry = path_1.default.join(installDir, 'node_modules', 'canvas');
-        if (!fs_1.default.existsSync(path_1.default.join(canvasEntry, 'package.json'))) {
-            logger.debug(`Installing canvas@${CANVAS_PACKAGE_VERSION} into ${installDir} ...`);
-            (0, child_process_1.execFileSync)(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
-                'install',
-                `canvas@${CANVAS_PACKAGE_VERSION}`,
-                '--no-save',
-                '--no-package-lock',
-                '--no-audit',
-                '--no-fund',
-                '--loglevel=error'
-            ], { cwd: installDir, stdio: 'pipe' });
-            logger.debug(`Installed canvas@${CANVAS_PACKAGE_VERSION}`);
+        // `skia-canvas` is vendored one directory above this bundle (see
+        // `scripts/vendor-skia-canvas.js`), the same layout `tsc`'s plain `lib/`
+        // output has relative to the project's real `node_modules`. We can't use
+        // `require.resolve('skia-canvas')` for this: ncc statically rewrites it to
+        // point at its own bundle output rather than the real installed package.
+        const packageDir = path_1.default.join(__dirname, '..', 'node_modules', 'skia-canvas');
+        const binaryPath = path_1.default.join(packageDir, 'lib', 'skia.node');
+        if (!fs_1.default.existsSync(binaryPath)) {
+            const prebuildScript = path_1.default.join(packageDir, 'lib', 'prebuild.mjs');
+            logger.debug(`Fetching skia-canvas native binary via ${prebuildScript} ...`);
+            (0, child_process_1.execFileSync)(process.execPath, [prebuildScript, 'download', '--or-compile'], { cwd: packageDir, stdio: 'pipe' });
+            logger.debug('Fetched skia-canvas native binary');
         }
-        // eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-dynamic-require
-        return require(canvasEntry);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return __nccwpck_require__(8856);
     });
 }
 function renderChartToDataUri(config) {
     return __awaiter(this, void 0, void 0, function* () {
-        const canvasModule = yield ensureCanvasModule();
-        Object.assign(global, { Image: canvasModule.Image });
-        const canvasEl = canvasModule.createCanvas(CHART_WIDTH, CHART_HEIGHT);
+        const skiaCanvas = yield ensureSkiaCanvas();
+        Object.assign(global, { Image: skiaCanvas.Image });
+        const canvasEl = new skiaCanvas.Canvas(CHART_WIDTH, CHART_HEIGHT);
         const chart = new chart_js_1.Chart(canvasEl.getContext('2d'), config);
-        const buffer = canvasEl.toBuffer('image/png');
+        const dataUri = canvasEl.toDataURL('png');
         chart.destroy();
-        return `data:image/png;base64,${buffer.toString('base64')}`;
+        return dataUri;
     });
 }
 function formatTime(epochMillis) {
@@ -28951,6 +28984,14 @@ module.exports = require("perf_hooks");
 
 "use strict";
 module.exports = require("querystring");
+
+/***/ }),
+
+/***/ 8856:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("skia-canvas");
 
 /***/ }),
 

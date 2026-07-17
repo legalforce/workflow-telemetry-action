@@ -1,10 +1,13 @@
 import { ChildProcess, execFileSync, spawn } from 'child_process'
 import fs from 'fs'
-import os from 'os'
 import path from 'path'
 import axios from 'axios'
 import { Chart, registerables } from 'chart.js'
 import type { ChartConfiguration, ChartItem, ChartOptions } from 'chart.js'
+import type {
+  Canvas as SkiaCanvasCtor,
+  Image as SkiaImageCtor
+} from 'skia-canvas'
 import * as core from '@actions/core'
 import {
   CPUStats,
@@ -35,76 +38,65 @@ const WHITE = '#FFFFFF'
 const CHART_WIDTH = 800
 const CHART_HEIGHT = 400
 
-// Pinned so every run installs the same, already-verified `canvas` build.
-const CANVAS_PACKAGE_VERSION = '3.2.3'
-
-interface CanvasLike {
-  getContext(contextId: '2d'): unknown
-  toBuffer(mimeType: string): Buffer
+interface SkiaCanvasExports {
+  Canvas: typeof SkiaCanvasCtor
+  Image: typeof SkiaImageCtor
 }
 
-interface CanvasModule {
-  createCanvas(width: number, height: number): CanvasLike
-  Image: new () => unknown
-}
+let skiaCanvasPromise: Promise<SkiaCanvasExports> | null = null
 
-let canvasModulePromise: Promise<CanvasModule> | null = null
-
-// `canvas` ships a native addon, so it can't be embedded in the ncc bundle
+// `skia-canvas` ships a native addon that can't be embedded in the ncc bundle
 // (the bundle is built once but runs on whichever OS/arch the workflow uses).
-// Installing it on demand lets npm fetch the prebuilt binary that matches
-// the actual runner, without depending on an external chart-rendering service.
-async function ensureCanvasModule(): Promise<CanvasModule> {
-  if (!canvasModulePromise) {
-    canvasModulePromise = installAndLoadCanvasModule()
+// `skia-canvas` is vendored as a real dependency (see `scripts/vendor-skia-canvas.js`)
+// without its platform-specific binary, so at runtime we fetch just that binary
+// via the package's own installer script, without depending on an external
+// chart-rendering service or re-running a full `npm install`.
+async function ensureSkiaCanvas(): Promise<SkiaCanvasExports> {
+  if (!skiaCanvasPromise) {
+    skiaCanvasPromise = loadSkiaCanvas()
   }
-  return canvasModulePromise
+  return skiaCanvasPromise
 }
 
-async function installAndLoadCanvasModule(): Promise<CanvasModule> {
-  const installDir = path.join(
-    process.env.RUNNER_TEMP || os.tmpdir(),
-    'workflow-telemetry-action-canvas'
-  )
-  fs.mkdirSync(installDir, { recursive: true })
+async function loadSkiaCanvas(): Promise<SkiaCanvasExports> {
+  // `skia-canvas` is vendored one directory above this bundle (see
+  // `scripts/vendor-skia-canvas.js`), the same layout `tsc`'s plain `lib/`
+  // output has relative to the project's real `node_modules`. We can't use
+  // `require.resolve('skia-canvas')` for this: ncc statically rewrites it to
+  // point at its own bundle output rather than the real installed package.
+  const packageDir = path.join(__dirname, '..', 'node_modules', 'skia-canvas')
+  const binaryPath = path.join(packageDir, 'lib', 'skia.node')
 
-  const canvasEntry = path.join(installDir, 'node_modules', 'canvas')
-  if (!fs.existsSync(path.join(canvasEntry, 'package.json'))) {
-    logger.debug(
-      `Installing canvas@${CANVAS_PACKAGE_VERSION} into ${installDir} ...`
-    )
+  if (!fs.existsSync(binaryPath)) {
+    const prebuildScript = path.join(packageDir, 'lib', 'prebuild.mjs')
+    logger.debug(`Fetching skia-canvas native binary via ${prebuildScript} ...`)
     execFileSync(
-      process.platform === 'win32' ? 'npm.cmd' : 'npm',
-      [
-        'install',
-        `canvas@${CANVAS_PACKAGE_VERSION}`,
-        '--no-save',
-        '--no-package-lock',
-        '--no-audit',
-        '--no-fund',
-        '--loglevel=error'
-      ],
-      { cwd: installDir, stdio: 'pipe' }
+      process.execPath,
+      [prebuildScript, 'download', '--or-compile'],
+      { cwd: packageDir, stdio: 'pipe' }
     )
-    logger.debug(`Installed canvas@${CANVAS_PACKAGE_VERSION}`)
+    logger.debug('Fetched skia-canvas native binary')
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-dynamic-require
-  return require(canvasEntry)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('skia-canvas')
 }
 
 async function renderChartToDataUri(
   config: ChartConfiguration<'line'>
 ): Promise<string> {
-  const canvasModule = await ensureCanvasModule()
-  Object.assign(global, { Image: canvasModule.Image })
+  const skiaCanvas = await ensureSkiaCanvas()
+  Object.assign(global, { Image: skiaCanvas.Image })
 
-  const canvasEl = canvasModule.createCanvas(CHART_WIDTH, CHART_HEIGHT)
-  const chart = new Chart(canvasEl.getContext('2d') as ChartItem, config)
-  const buffer = canvasEl.toBuffer('image/png')
+  const canvasEl = new skiaCanvas.Canvas(CHART_WIDTH, CHART_HEIGHT)
+  const chart = new Chart(
+    canvasEl.getContext('2d') as unknown as ChartItem,
+    config
+  )
+  const dataUri = canvasEl.toDataURL('png')
   chart.destroy()
 
-  return `data:image/png;base64,${buffer.toString('base64')}`
+  return dataUri
 }
 
 function formatTime(epochMillis: number): string {
