@@ -75,13 +75,14 @@ let skiaCanvasPromise: Promise<SkiaCanvasExports> | null = null
 
 // `skia-canvas`'s JS (and its own JS dependencies) are bundled into the ncc
 // output like any other dependency. Only its native addon is special-cased:
-// `scripts/strip-skia-canvas-binary.js` deletes it before `ncc build` runs, so
-// ncc can't find a `skia.node` to bake in for whichever platform built this
-// package (the bundle is built once but runs on whichever OS/arch the workflow
-// uses) - that leaves skia-canvas's internal `require('../skia.node')` as a
-// plain runtime lookup relative to this bundle's own location. We fetch a
-// prebuilt binary matching the actual runner into that exact spot before the
-// first render, straight from skia-canvas's own GitHub release (no `npm
+// `package.json`'s `ncc build` scripts pass `--external ../skia.node`, the
+// exact relative specifier skia-canvas's own `classes/neon.js` requires it
+// with, so ncc leaves just that one require as a plain runtime lookup
+// relative to this bundle's own location instead of baking in whichever
+// platform's `skia.node` happened to be present when this package was built
+// (the bundle is built once but runs on whichever OS/arch the workflow uses).
+// We fetch a prebuilt binary matching the actual runner into that exact spot
+// before the first render, straight from skia-canvas's own GitHub release (no `npm
 // install` and no external chart-rendering service involved).
 async function ensureSkiaCanvasBinary(): Promise<void> {
   const binaryPath = path.join(__dirname, '..', 'skia.node')

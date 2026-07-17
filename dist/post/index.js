@@ -16027,7 +16027,7 @@ const ø = Symbol.for('📦'), // the attr containing the boxed struct
         let obj = internal(Object.create(type.prototype), ø, struct)
         return struct && internal(obj, 'native', neon[type.name])
       },
-      neon = Object.entries(__nccwpck_require__(9988)).reduce( (api, [name, fn]) => {
+      neon = Object.entries(__nccwpck_require__(2109)).reduce( (api, [name, fn]) => {
         let [_, struct, getset, attr] = name.match(/(.*?)_(?:([sg]et)_)?(.*)/),
             cls = api[struct] || (api[struct] = {}),
             slot = getset ? (cls[attr] || (cls[attr] = {})) : cls
@@ -59106,13 +59106,14 @@ const SKIA_CANVAS_PREBUILD_HASHES = {
 let skiaCanvasPromise = null;
 // `skia-canvas`'s JS (and its own JS dependencies) are bundled into the ncc
 // output like any other dependency. Only its native addon is special-cased:
-// `scripts/strip-skia-canvas-binary.js` deletes it before `ncc build` runs, so
-// ncc can't find a `skia.node` to bake in for whichever platform built this
-// package (the bundle is built once but runs on whichever OS/arch the workflow
-// uses) - that leaves skia-canvas's internal `require('../skia.node')` as a
-// plain runtime lookup relative to this bundle's own location. We fetch a
-// prebuilt binary matching the actual runner into that exact spot before the
-// first render, straight from skia-canvas's own GitHub release (no `npm
+// `package.json`'s `ncc build` scripts pass `--external ../skia.node`, the
+// exact relative specifier skia-canvas's own `classes/neon.js` requires it
+// with, so ncc leaves just that one require as a plain runtime lookup
+// relative to this bundle's own location instead of baking in whichever
+// platform's `skia.node` happened to be present when this package was built
+// (the bundle is built once but runs on whichever OS/arch the workflow uses).
+// We fetch a prebuilt binary matching the actual runner into that exact spot
+// before the first render, straight from skia-canvas's own GitHub release (no `npm
 // install` and no external chart-rendering service involved).
 function ensureSkiaCanvasBinary() {
     return __awaiter(this, void 0, void 0, function* () {
@@ -59747,14 +59748,6 @@ exports.report = report;
 
 /***/ }),
 
-/***/ 9988:
-/***/ ((module) => {
-
-module.exports = eval("require")("../skia.node");
-
-
-/***/ }),
-
 /***/ 2877:
 /***/ ((module) => {
 
@@ -59776,6 +59769,14 @@ module.exports = eval("require")("osx-temperature-sensor");
 
 module.exports = eval("require")("sharp");
 
+
+/***/ }),
+
+/***/ 2109:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("../skia.node");
 
 /***/ }),
 
