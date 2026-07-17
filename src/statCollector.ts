@@ -126,7 +126,7 @@ async function skiaCanvasAssetTriplet(): Promise<string> {
 
 async function loadSkiaCanvas(): Promise<SkiaCanvasExports> {
   await ensureSkiaCanvasBinary()
-  return (await import('skia-canvas')) as unknown as SkiaCanvasExports
+  return await import('skia-canvas')
 }
 
 async function ensureSkiaCanvas(): Promise<SkiaCanvasExports> {

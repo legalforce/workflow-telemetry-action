@@ -213227,7 +213227,7 @@ async function skiaCanvasAssetTriplet() {
 }
 async function loadSkiaCanvas() {
     await ensureSkiaCanvasBinary();
-    return (await __nccwpck_require__.e(/* import() */ 660).then(__nccwpck_require__.bind(__nccwpck_require__, 90660)));
+    return await __nccwpck_require__.e(/* import() */ 660).then(__nccwpck_require__.bind(__nccwpck_require__, 90660));
 }
 async function ensureSkiaCanvas() {
     if (!skiaCanvasPromise) {
