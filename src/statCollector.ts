@@ -30,8 +30,9 @@ import {
   ProcessedStats,
   StackedAreaGraphOptions,
   WorkflowJobType
-} from './interfaces'
-import * as logger from './logger'
+} from './interfaces/index.js'
+import artifact from '@actions/artifact'
+import * as logger from './logger.js'
 
 Chart.register(...registerables)
 
@@ -87,7 +88,7 @@ let skiaCanvasPromise: Promise<SkiaCanvasExports> | null = null
 // before the first render, straight from skia-canvas's own GitHub release (no `npm
 // install` and no external chart-rendering service involved).
 async function ensureSkiaCanvasBinary(): Promise<void> {
-  const binaryPath = path.join(__dirname, '..', 'skia.node')
+  const binaryPath = path.join(import.meta.dirname, '..', 'skia.node')
   if (fs.existsSync(binaryPath)) {
     return
   }
@@ -125,8 +126,7 @@ async function skiaCanvasAssetTriplet(): Promise<string> {
 
 async function loadSkiaCanvas(): Promise<SkiaCanvasExports> {
   await ensureSkiaCanvasBinary()
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require('skia-canvas')
+  return (await import('skia-canvas')) as unknown as SkiaCanvasExports
 }
 
 async function ensureSkiaCanvas(): Promise<SkiaCanvasExports> {
@@ -134,33 +134,6 @@ async function ensureSkiaCanvas(): Promise<SkiaCanvasExports> {
     skiaCanvasPromise = loadSkiaCanvas()
   }
   return skiaCanvasPromise
-}
-
-type ArtifactModule = typeof import('@actions/artifact')
-type ArtifactClient = ArtifactModule['default']
-
-let artifactClientPromise: Promise<ArtifactClient> | null = null
-
-// `@actions/artifact`'s package.json `exports` only declares an `import`
-// condition (it ships ESM only), so a normal static or dynamic import gets
-// downleveled by TypeScript's CommonJS output into a `require()` call that
-// fails at runtime with ERR_PACKAGE_PATH_NOT_EXPORTED - the same restriction
-// also stops ncc from bundling it. Hiding the specifier inside a `Function`
-// keeps the compiler from touching it, so this performs a genuine ESM
-// `import()` at runtime instead.
-async function loadArtifactClient(): Promise<ArtifactClient> {
-  const importESM = new Function('specifier', 'return import(specifier)') as (
-    specifier: string
-  ) => Promise<ArtifactModule>
-  const mod = await importESM('@actions/artifact')
-  return mod.default
-}
-
-async function ensureArtifactClient(): Promise<ArtifactClient> {
-  if (!artifactClientPromise) {
-    artifactClientPromise = loadArtifactClient()
-  }
-  return artifactClientPromise
 }
 
 function artifactPageUrl(artifactId: number): string {
@@ -196,8 +169,7 @@ async function renderAndUploadChart(
     const filePath = path.join(tempDir, `${artifactName}.png`)
     fs.writeFileSync(filePath, png)
 
-    const artifactClient = await ensureArtifactClient()
-    const { id } = await artifactClient.uploadArtifact(
+    const { id } = await artifact.uploadArtifact(
       artifactName,
       [filePath],
       tempDir,
@@ -687,7 +659,7 @@ export async function start(): Promise<boolean> {
 
     const child: ChildProcess = spawn(
       process.argv[0],
-      [path.join(__dirname, '../scw/index.js')],
+      [path.join(import.meta.dirname, '../scw/index.js')],
       {
         detached: true,
         stdio: 'ignore',

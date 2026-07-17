@@ -1,8 +1,8 @@
 import * as core from '@actions/core'
-import * as stepTracer from './stepTracer'
-import * as statCollector from './statCollector'
-import * as processTracer from './processTracer'
-import * as logger from './logger'
+import * as stepTracer from './stepTracer.js'
+import * as statCollector from './statCollector.js'
+import * as processTracer from './processTracer.js'
+import * as logger from './logger.js'
 
 async function run(): Promise<void> {
   try {

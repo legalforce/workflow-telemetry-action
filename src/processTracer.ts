@@ -3,9 +3,9 @@ import path from 'path'
 import * as core from '@actions/core'
 import si from 'systeminformation'
 import { sprintf } from 'sprintf-js'
-import { parse } from './procTraceParser'
-import { CompletedCommand, WorkflowJobType } from './interfaces'
-import * as logger from './logger'
+import { parse } from './procTraceParser.js'
+import { CompletedCommand, WorkflowJobType } from './interfaces/index.js'
+import * as logger from './logger.js'
 
 const PROC_TRACER_PID_KEY = 'PROC_TRACER_PID'
 const PROC_TRACER_OUTPUT_FILE_NAME = 'proc-trace.out'
@@ -71,14 +71,17 @@ export async function start(): Promise<boolean> {
       await getProcessTracerBinaryName()
     if (procTracerBinaryName) {
       const procTraceOutFilePath = path.join(
-        __dirname,
+        import.meta.dirname,
         '../proc-tracer',
         PROC_TRACER_OUTPUT_FILE_NAME
       )
       const child: ChildProcess = spawn(
         'sudo',
         [
-          path.join(__dirname, `../proc-tracer/${procTracerBinaryName}`),
+          path.join(
+            import.meta.dirname,
+            `../proc-tracer/${procTracerBinaryName}`
+          ),
           '-f',
           'json',
           '-o',
@@ -152,7 +155,7 @@ export async function report(
   }
   try {
     const procTraceOutFilePath = path.join(
-      __dirname,
+      import.meta.dirname,
       '../proc-tracer',
       PROC_TRACER_OUTPUT_FILE_NAME
     )

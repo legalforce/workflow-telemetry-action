@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import * as readline from 'readline'
-import * as logger from './logger'
-import { CompletedCommand, ProcEventParseOptions } from './interfaces'
+import * as logger from './logger.js'
+import { CompletedCommand, ProcEventParseOptions } from './interfaces/index.js'
 
 const SYS_PROCS_TO_BE_IGNORED: Set<string> = new Set([
   'awk',

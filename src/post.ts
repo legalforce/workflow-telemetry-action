@@ -1,11 +1,11 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
 import { Octokit } from '@octokit/action'
-import * as stepTracer from './stepTracer'
-import * as statCollector from './statCollector'
-import * as processTracer from './processTracer'
-import * as logger from './logger'
-import { WorkflowJobType } from './interfaces'
+import * as stepTracer from './stepTracer.js'
+import * as statCollector from './statCollector.js'
+import * as processTracer from './processTracer.js'
+import * as logger from './logger.js'
+import { WorkflowJobType } from './interfaces/index.js'
 
 const { pull_request } = github.context.payload
 const { workflow, job, repo, runId, sha } = github.context
