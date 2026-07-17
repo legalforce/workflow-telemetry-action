@@ -213244,7 +213244,8 @@ function artifactPageUrl(artifactId) {
 // Instead we upload the PNG as a workflow artifact with `skipArchive: true`
 // (actions/upload-artifact's `archive: false`), which uploads the raw file
 // with its real content type instead of zipping it - GitHub can then render
-// it natively in the browser, so we embed the artifact's page as an `<img>`.
+// it natively in the browser, so we embed the artifact's page with Markdown
+// image syntax (`![]()`).
 async function renderAndUploadChart(config, artifactName) {
     const skiaCanvas = await ensureSkiaCanvas();
     Object.assign(global, { Image: skiaCanvas.Image });
@@ -213427,22 +213428,22 @@ async function reportWorkflowMetrics(currentJob) {
         : null;
     const postContentItems = [];
     if (cpuLoad) {
-        postContentItems.push('### CPU Metrics', `<img alt="${cpuLoad.id}" src="${cpuLoad.url}" />`, '');
+        postContentItems.push('### CPU Metrics', `![${cpuLoad.id}](${cpuLoad.url})`, '');
     }
     if (memoryUsage) {
-        postContentItems.push('### Memory Metrics', `<img alt="${memoryUsage.id}" src="${memoryUsage.url}" />`, '');
+        postContentItems.push('### Memory Metrics', `![${memoryUsage.id}](${memoryUsage.url})`, '');
     }
     if ((networkIORead && networkIOWrite) || (diskIORead && diskIOWrite)) {
         postContentItems.push('### IO Metrics', '|               | Read      | Write     |', '|---            |---        |---        |');
     }
     if (networkIORead && networkIOWrite) {
-        postContentItems.push(`| Network I/O   | <img alt="${networkIORead.id}" src="${networkIORead.url}" />        | <img alt="${networkIOWrite.id}" src="${networkIOWrite.url}" />        |`);
+        postContentItems.push(`| Network I/O   | ![${networkIORead.id}](${networkIORead.url})        | ![${networkIOWrite.id}](${networkIOWrite.url})        |`);
     }
     if (diskIORead && diskIOWrite) {
-        postContentItems.push(`| Disk I/O      | <img alt="${diskIORead.id}" src="${diskIORead.url}" />              | <img alt="${diskIOWrite.id}" src="${diskIOWrite.url}" />              |`);
+        postContentItems.push(`| Disk I/O      | ![${diskIORead.id}](${diskIORead.url})              | ![${diskIOWrite.id}](${diskIOWrite.url})              |`);
     }
     if (diskSizeUsage) {
-        postContentItems.push('### Disk Size Metrics', `<img alt="${diskSizeUsage.id}" src="${diskSizeUsage.url}" />`, '');
+        postContentItems.push('### Disk Size Metrics', `![${diskSizeUsage.id}](${diskSizeUsage.url})`, '');
     }
     return postContentItems.join('\n');
 }
